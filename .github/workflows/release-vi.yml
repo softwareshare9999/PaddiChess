@@ -1,0 +1,70 @@
+name: Release (Vietnamese)
+
+on:
+  push:
+    tags: ['v*-vi*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create, e.g. v1.0.3-vi.1'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-vi-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package macOS (Apple Silicon) and Windows x64
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          cache: true
+          cache-dependency-path: '**/packages*.lock.json'
+      # The Windows rules component is cross-compiled from macOS with Zig.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+      - name: Package
+        run: |
+          export PADDI_ZIG="$(command -v zig)"
+          bash PaddiChess/Packaging/package.sh arm
+          bash PaddiChess/Packaging/package.sh windows
+      - name: Collect release assets
+        run: |
+          mkdir -p release
+          cp "dist/Paddi象棋-macOS-AppleSilicon.zip" release/PaddiChess-macOS-AppleSilicon.zip
+          cp "dist/Paddi象棋-Windows-x64.zip" release/PaddiChess-Windows-x64.zip
+          (cd release && shasum -a 256 *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt)
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          # Paddi Cờ Tướng ${TAG} · bản tiếng Việt
+
+          Bản dựng từ [PaddiSoft/PaddiChess](https://github.com/PaddiSoft/PaddiChess) với giao diện tiếng Việt. Quân cờ trên bàn giữ nguyên chữ Hán.
+
+          | Nền tảng | Tệp tải về | Chương trình khởi động |
+          | --- | --- | --- |
+          | macOS · Apple Silicon | PaddiChess-macOS-AppleSilicon.zip | \`Paddi象棋.app\` |
+          | Windows · x64 | PaddiChess-Windows-x64.zip | \`Paddi象棋.exe\` |
+
+          Gói đã kèm .NET runtime, engine Pikafish và NNUE; giải nén đầy đủ và giữ nguyên cấu trúc thư mục. Bản Windows là bản portable, không cần cài đặt.
+
+          Muốn dùng giao diện tiếng Trung gốc: chạy với \`--lang zh\` hoặc đặt biến môi trường \`PADDICHESS_LANG=zh\`.
+
+          Mã kiểm tra: SHA256SUMS.txt.
+          EOF
+          gh release create "$TAG" release/* --target "$GITHUB_SHA" --title "Paddi Cờ Tướng ${TAG} · macOS / Windows" --notes-file notes.md
