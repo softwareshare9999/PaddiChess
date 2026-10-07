@@ -430,6 +430,7 @@ public sealed class BoardView : Control
     private static void DrawCentered(DrawingContext context, string text, Point center,
         double size, string color, bool bold)
     {
+        text = Localization.L10n.BoardText(text);
         var key = (text, size, color, bold);
         if (!Texts.TryGetValue(key, out var formatted))
         {

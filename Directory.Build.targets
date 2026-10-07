@@ -1,0 +1,7 @@
+<Project>
+  <!-- Display-language catalogs (PaddiChess/Localization/*.json), kept out of PaddiChess.csproj
+       so that upstream project-file changes merge cleanly. -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'PaddiChess'">
+    <EmbeddedResource Include="Localization/*.json" LogicalName="PaddiXiangqi.Localization.%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

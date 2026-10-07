@@ -492,7 +492,7 @@ public partial class MainWindow : Window
                 _searchCancellation = null;
                 _busy = false;
                 _searchPlaysMove = false;
-                RefreshUi(preserveError: EngineStatusText.Text == "引擎连接失败");
+                RefreshUi(preserveError: EngineStatusText.Text == Localization.L10n.T("引擎连接失败"));
                 if (moveCommitted) MaybeStartSearch();
             }
         }
@@ -954,9 +954,9 @@ public partial class MainWindow : Window
         {
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "保存 Paddi 象棋棋谱",
+                Title = Localization.L10n.T("保存 Paddi 象棋棋谱"),
                 SuggestedFileName = title + ".paddi.json",
-                FileTypeChoices = [new FilePickerFileType("Paddi 象棋棋谱") { Patterns = ["*.paddi.json", "*.json"] }]
+                FileTypeChoices = [new FilePickerFileType(Localization.L10n.T("Paddi 象棋棋谱")) { Patterns = ["*.paddi.json", "*.json"] }]
             });
             if (file is null) return;
             await using var stream = await file.OpenWriteAsync();
@@ -974,9 +974,9 @@ public partial class MainWindow : Window
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "导入 Paddi 象棋棋谱",
+                Title = Localization.L10n.T("导入 Paddi 象棋棋谱"),
                 AllowMultiple = false,
-                FileTypeFilter = [new FilePickerFileType("Paddi 象棋棋谱") { Patterns = ["*.paddi.json", "*.json"] }]
+                FileTypeFilter = [new FilePickerFileType(Localization.L10n.T("Paddi 象棋棋谱")) { Patterns = ["*.paddi.json", "*.json"] }]
             });
             if (files.Count == 0) return;
             await using var stream = await files[0].OpenReadAsync();

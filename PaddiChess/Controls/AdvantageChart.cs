@@ -122,5 +122,5 @@ public sealed class AdvantageChart : Control
     }
 
     private static FormattedText CreateText(string text, IBrush brush) =>
-        new(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, LabelTypeface, 11, brush);
+        new(Localization.L10n.T(text), CultureInfo.CurrentCulture, FlowDirection.LeftToRight, LabelTypeface, 11, brush);
 }

@@ -128,6 +128,7 @@ public partial class MainWindow
     }
     private async Task<string?> ChooseEngineFileAsync(string title, string[]? patterns = null)
     {
+        title = Localization.L10n.T(title);
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = title, AllowMultiple = false,
             FileTypeFilter = patterns is null ? null : [new FilePickerFileType(title) { Patterns = patterns }] });
         return files.FirstOrDefault()?.TryGetLocalPath();
@@ -261,7 +262,7 @@ public partial class MainWindow
         try
         {
             var plugin = ReadEnginePluginEditor();
-            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions { Title = "导出引擎插件配置",
+            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions { Title = Localization.L10n.T("导出引擎插件配置"),
                 SuggestedFileName = "engine.paddi-engine.json", DefaultExtension = "json" });
             if (file?.TryGetLocalPath() is { } path) { plugin.Export(path); EnginePluginStatusText.Text = "插件配置已导出；相对路径以配置文件所在目录为准。"; }
         }
