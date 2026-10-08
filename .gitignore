@@ -5,6 +5,7 @@ dist/
 .DS_Store
 *.user
 *.suo
+.vs/
 TestResults/
 **/TestResults/
 *.trx
