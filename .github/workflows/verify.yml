@@ -13,6 +13,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-recognition:
+    name: Windows · inference runtime and fallback
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install pinned native compiler
+        shell: pwsh
+        run: |
+          Invoke-WebRequest 'https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip' -OutFile "$env:RUNNER_TEMP/zig.zip"
+          if ((Get-FileHash "$env:RUNNER_TEMP/zig.zip" -Algorithm SHA256).Hash -ne 'd859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158') { throw 'Zig checksum mismatch' }
+          Expand-Archive "$env:RUNNER_TEMP/zig.zip" "$env:RUNNER_TEMP/zig"
+          "$env:RUNNER_TEMP/zig/zig-windows-x86_64-0.13.0" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Verify Windows runtime and real recognition samples
+        shell: pwsh
+        run: |
+          dotnet restore PaddiChess.Tests/PaddiChess.Tests.csproj -p:RuntimeIdentifier=win-x64 --locked-mode
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet test PaddiChess.Tests/PaddiChess.Tests.csproj -c Release -r win-x64 --no-restore --filter "FullyQualifiedName~InferenceRuntimeTests|FullyQualifiedName~InferenceModelTests|FullyQualifiedName~BoardClassifierTests" --logger "trx;LogFileName=windows-recognition.trx" --results-directory artifacts/verification/windows
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-recognition-evidence
+          path: artifacts/verification/windows
+          retention-days: 14
   macos-regression:
     name: macOS · locked dependencies and regression
     runs-on: macos-14
@@ -32,7 +61,20 @@ jobs:
       - name: Check publication hygiene
         run: python3 scripts/audit-publication.py
       - name: Verify complete solution
+        # Keep full-board OCR correctness and UI scheduling tests independent
+        # of a hosted VM's CoreML partitions. Test auto selection separately
+        # in a fresh process below; both CPU and automatic paths are required.
+        env:
+          PADDI_RECOGNITION_DEVICE: cpu
         run: bash scripts/verify.sh
+      - name: Verify automatic inference and real recognition samples
+        env:
+          PADDI_RECOGNITION_DEVICE: auto
+        run: >-
+          dotnet test PaddiChess.Tests/PaddiChess.Tests.csproj -c Release --no-build --no-restore
+          --filter 'FullyQualifiedName~InferenceRuntimeTests|FullyQualifiedName~InferenceModelTests|FullyQualifiedName~BoardClassifierTests'
+          --logger 'trx;LogFileName=macos-auto-recognition.trx'
+          --results-directory artifacts/verification/macos-auto
       - name: Upload regression evidence
         if: always()
         uses: actions/upload-artifact@v4
