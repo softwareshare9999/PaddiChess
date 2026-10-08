@@ -1,32 +1,112 @@
 name: Release (Vietnamese)
 
+# Publishes automatically after Verify succeeds on a push to main (e.g. "Sync fork"),
+# when a v*-vi* tag is pushed, or manually from the Actions tab.
 on:
+  workflow_run:
+    workflows: [Verify]
+    types: [completed]
+    branches: [main]
   push:
     tags: ['v*-vi*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to create, e.g. v1.0.3-vi.1'
-        required: true
+        description: 'Release tag, e.g. v1.0.4-vi.1 (leave empty to number it automatically)'
+        required: false
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-vi-${{ github.event.inputs.tag || github.ref_name }}
+  group: release-vi
   cancel-in-progress: false
 
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+
 jobs:
+  prepare:
+    name: Decide release
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      sha: ${{ steps.tag.outputs.sha }}
+      skip: ${{ steps.tag.outputs.skip }}
+      untranslated: ${{ steps.i18n.outputs.untranslated }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+      - name: Decide release tag
+        id: tag
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          git fetch --tags --force origin
+          if [[ -n "$INPUT_TAG" ]]; then
+            tag="$INPUT_TAG"
+          elif [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            if git tag --points-at "$sha" | grep -q -- '-vi'; then
+              echo "Commit $sha is already released; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            version="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props | head -1)"
+            [[ -n "$version" ]] || { echo "No <Version> in Directory.Build.props" >&2; exit 1; }
+            n=1
+            while git rev-parse -q --verify "refs/tags/v$version-vi.$n" >/dev/null; do n=$((n+1)); done
+            tag="v$version-vi.$n"
+          fi
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Release tag: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/setup-dotnet@v4
+        if: steps.tag.outputs.skip != 'true'
+        with:
+          dotnet-version: '10.0.x'
+      # New upstream strings show in Chinese until vi.json is updated; release anyway, but say so.
+      - name: Check translations
+        id: i18n
+        if: steps.tag.outputs.skip != 'true'
+        run: |
+          set +e
+          output="$(dotnet run scripts/i18n.cs -- check 2>&1)"
+          set -e
+          echo "$output" | tail -n 40
+          count="$(echo "$output" | sed -n 's/.* \([0-9][0-9]*\) untranslated.*/\1/p' | tail -1)"
+          count="${count:-0}"
+          echo "untranslated=$count" >> "$GITHUB_OUTPUT"
+          if [[ "$count" != 0 ]]; then
+            echo "::warning::$count new upstream strings are not translated yet. Run 'dotnet run scripts/i18n.cs -- sync' and fill in vi.json."
+          fi
+
   package:
     name: Package macOS (Apple Silicon) and Windows x64
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: macos-14
     timeout-minutes: 45
     env:
-      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
-      DOTNET_NOLOGO: '1'
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      SHA: ${{ needs.prepare.outputs.sha }}
+      UNTRANSLATED: ${{ needs.prepare.outputs.untranslated }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
@@ -67,4 +147,7 @@ jobs:
 
           Mã kiểm tra: SHA256SUMS.txt.
           EOF
-          gh release create "$TAG" release/* --target "$GITHUB_SHA" --title "Paddi Cờ Tướng ${TAG} · macOS / Windows" --notes-file notes.md
+          if [[ "${UNTRANSLATED:-0}" != 0 ]]; then
+            printf '\n> Lưu ý: bản này có %s chuỗi mới từ upstream chưa được dịch và sẽ hiển thị bằng tiếng Trung.\n' "$UNTRANSLATED" >> notes.md
+          fi
+          gh release create "$TAG" release/* --target "$SHA" --title "Paddi Cờ Tướng ${TAG} · macOS / Windows" --notes-file notes.md
