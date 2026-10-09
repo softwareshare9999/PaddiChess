@@ -33,8 +33,11 @@ public partial class ExternalSessionTests
             Assert.NotEqual(sent.Fen, confirmed.Fen);
             Assert.Equal(sent.Fen, confirmed.BeforeFen);
             Assert.Equal("paused", events[^1].Kind);
-            var log = await File.ReadAllTextAsync(first.EventsPath);
-            var saved = await File.ReadAllTextAsync(first.RecordPath);
+            string log, saved;
+            using (var logReader = new StreamReader(new FileStream(first.EventsPath, FileMode.Open,
+                FileAccess.Read, FileShare.ReadWrite))) log = await logReader.ReadToEndAsync();
+            using (var recordReader = new StreamReader(ExternalHistoryStore.OpenRecordRead(first.RecordPath)))
+                saved = await recordReader.ReadToEndAsync();
             Assert.DoesNotContain("isolated-dummy-key", log + saved);
             Assert.DoesNotContain("fixture.invalid", log + saved);
 
@@ -47,6 +50,8 @@ public partial class ExternalSessionTests
             Click(window, "ExternalDisconnectButton");
             await WaitPreflightAsync(() => !Get<bool>(window, "_externalLinked") &&
                 Get<ExternalHistoryStore?>(window, "_externalHistory") is null, window);
+            await Get<Task>(window, "_externalHistoryDrain");
+            Assert.DoesNotContain("保存失败", window.FindControl<TextBlock>("BoardFooter")!.Text ?? "");
             events = await ExternalHistoryStore.ReadEventsAsync(first.EventsPath);
             Assert.Contains(events, entry => entry.Kind == "resumed");
             Assert.Equal("ended", events[^1].Kind);
