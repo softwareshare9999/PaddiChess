@@ -428,6 +428,7 @@ public partial class MainWindow
         var engine = await GetExternalPlayingEngineAsync();
         if (!resume) engine.RequestNewGame();
         Task? warmup = null;
+        Task? inputPreparation = null;
         Task? releaseLocalEngine = null;
         Task<Exception?>? inputTask = null;
         Task<ExternalDecision>? decisionTask = null;
@@ -445,13 +446,17 @@ public partial class MainWindow
         await using var inputVerification = new ExternalRecognitionRefresh(ct, TimeSpan.FromMilliseconds(250));
         var inputRetry = new ExternalInputRetry();
         string? lastVerificationStatus = null;
+        var nextVerificationReport = TimeSpan.Zero;
         BoardObservation? submittedFrame = null;
         async Task<Exception?> SendInputAsync(double fx, double fy, double tx, double ty, bool finishSelection = false)
         {
+            var inputClock = System.Diagnostics.Stopwatch.StartNew();
+            var inputMove = submittedMove;
             try
             {
                 if (finishSelection) await desktop.CompleteSelectedMoveAsync(target, fx, fy, tx, ty, inputLifetime.Token);
                 else await desktop.MoveAsync(target, fx, fy, tx, ty, inputLifetime.Token);
+                await RecordExternalHistoryAsync("input-completed", $"原生输入已完成 · {inputClock.Elapsed.TotalMilliseconds:F0} ms · 等待画面确认", move: inputMove);
                 return null;
             }
             catch (Exception ex) { return ex; } // Observed by the loop, including partial-input outcomes.
@@ -733,6 +738,23 @@ public partial class MainWindow
                     continue;
                 }
                 if (DateTimeOffset.UtcNow < inputRetryAfter) continue;
+                inputPreparation ??= Task.Run(() => desktop.PrepareInputAsync(warmupLifetime.Token), warmupLifetime.Token);
+                // Independent recognition and search can run concurrently. Bind the
+                // read to this exact history and its pixels, including while connected
+                // but unarmed. The two fresh checks below still reject changed boards;
+                // neither the live game's labels nor a prepared move authorize input.
+                var readyIdentity = _game.StartFen + "|" + _game.UciMoveList;
+                var readyRead = await Task.Run(() => inputVerification.Current(readyIdentity, null, observation), ct);
+                if (readyRead is not { Confident: true })
+                {
+                    var readyGeometry = calibration;
+                    var readyTurn = _game.RedToMove;
+                    var readySkin = _externalSessionSkin;
+                    var readyPath = (ExternalSkinBox.SelectedItem as SkinChoice)?.Path;
+                    inputVerification.TryStart(readyIdentity, null, observation, sessionClock.Elapsed,
+                        token => _positionRecognizer.ReadAsync(frame, readyGeometry, readyTurn,
+                            token, false, readySkin, readyPath));
+                }
                 if (decisionTask == null && _externalPreparedDecision is { } prepared)
                 {
                     if (prepared.Error != null)
@@ -819,14 +841,22 @@ public partial class MainWindow
                     inputVerification.TryStart(verificationIdentity, null, check, sessionClock.Elapsed,
                         token => _positionRecognizer.ReadAsync(beforeClick, verificationGeometry, verificationTurn,
                             token, false, verificationSkin, verificationPath));
-                    var status = identityRead is { Uncertain.Count: > 0 }
-                        ? $"计算已完成 · 正在核验 {identityRead.Uncertain.Count} 个不确定位置，暂未发送落子。"
-                        : "计算已完成 · 正在核验最新棋盘，核验后落子…";
+                    var reason = identityRead is { Uncertain.Count: > 0 }
+                        ? $"正在核验 {identityRead.Uncertain.Count} 个不确定位置"
+                        : identityRead?.Problem ?? inputVerification.LastFailure ?? "正在核验最新棋盘";
+                    var status = $"计算已完成 · {reason}，核验后自动落子…";
                     ExternalStatusText.Text = status;
-                    if (lastVerificationStatus != status)
+                    // Animated samples can alternate between an uncertain cell and
+                    // no frame-bound result every poll. Do not flush a log entry at
+                    // capture rate while waiting for the same prepared decision.
+                    if (lastVerificationStatus == null || sessionClock.Elapsed >= nextVerificationReport)
                     {
                         lastVerificationStatus = status;
-                        await RecordExternalHistoryAsync("verification", status, move: chosen, observedFen: identityRead?.Fen);
+                        nextVerificationReport = sessionClock.Elapsed + TimeSpan.FromSeconds(3);
+                        await RecordExternalHistoryAsync("verification", status +
+                            $" · 已完成 {inputVerification.CompletedAttempts} 次核验 · 上次 {inputVerification.LastDuration.TotalMilliseconds:F0} ms" +
+                            (identityRead is { Uncertain.Count: > 0 } ? " · 位置 " + string.Join(' ', identityRead.Uncertain.Select(s => s.Uci)) : ""),
+                            move: chosen, observedFen: identityRead?.Fen);
                     }
                     continue;
                 }
@@ -881,6 +911,10 @@ public partial class MainWindow
                 var sourcePoint = ExternalCaptureGeometry.ToWindowPoint(source.X, source.Y, check.Width, check.Height, target);
                 var destinationPoint = ExternalCaptureGeometry.ToWindowPoint(dest.X, dest.Y, check.Width, check.Height, target);
                 inputTask = SendInputAsync(sourcePoint.X, sourcePoint.Y, destinationPoint.X, destinationPoint.Y);
+                // The current helper is consumed once. Prepare another only for
+                // the next confirmed turn, and never wait for warmup before input.
+                if (inputPreparation is { IsCompleted: true })
+                { await inputPreparation; inputPreparation = null; }
                 await RecordExternalHistoryAsync("sent", "已提交落子输入，等待截图确认实际结果", move: chosen);
                 captureImmediately = true;
 
@@ -916,6 +950,8 @@ public partial class MainWindow
                 try { await releaseLocalEngine; } catch (OperationCanceledException) { }
             warmupLifetime.Cancel();
             if (warmup != null) await warmup;
+            if (inputPreparation != null)
+                try { await inputPreparation; } catch (OperationCanceledException) { }
             decisionCancellation?.Cancel();
             inputLifetime.Cancel();
             if (decisionTask != null) await decisionTask;
