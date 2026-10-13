@@ -36,13 +36,13 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           dotnet test PaddiChess.Tests/PaddiChess.Tests.csproj -c Release -r win-x64 --no-restore --filter "FullyQualifiedName~InferenceRuntimeTests|FullyQualifiedName~InferenceModelTests|FullyQualifiedName~BoardClassifierTests|FullyQualifiedName~VerificationStallTests|FullyQualifiedName~MarkerRecognitionTests|FullyQualifiedName~BorderVerificationTests|FullyQualifiedName~OcrResumeTests" --logger "trx;LogFileName=windows-recognition.trx" --results-directory artifacts/verification/windows
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Verify takeover and owned Windows input
+      - name: Verify complete Windows regression and owned native input
         shell: pwsh
         env:
           PADDI_RECOGNITION_DEVICE: cpu
           PADDI_TEST_NATIVE_INPUT: '1'
         run: |
-          dotnet test PaddiChess.Tests/PaddiChess.Tests.csproj -c Release -r win-x64 --no-build --no-restore --filter "FullyQualifiedName~ExternalSessionTests|FullyQualifiedName~ExternalInput|FullyQualifiedName~ExternalClick|FullyQualifiedName~RecognitionRefreshTests|FullyQualifiedName~WindowsCaptureIntegrationTests|FullyQualifiedName~ManualPositionEvidenceTests|FullyQualifiedName~PositionEditor" --logger "trx;LogFileName=windows-takeover.trx" --results-directory artifacts/verification/windows
+          dotnet test PaddiChess.Tests/PaddiChess.Tests.csproj -c Release -r win-x64 --no-build --no-restore --logger "trx;LogFileName=windows-regression.trx" --results-directory artifacts/verification/windows
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         if: always()
@@ -92,4 +92,28 @@ jobs:
             artifacts/verification/**
             artifacts/ui/*.png
           if-no-files-found: warn
+          retention-days: 14
+
+  linux-regression:
+    name: Linux X11 · capture, input and regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PADDI_RECOGNITION_DEVICE: cpu
+      PADDI_TEST_NATIVE_INPUT: '1'
+      XDG_SESSION_TYPE: x11
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install native build and X11 test dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang lld xvfb libx11-6 libxcomposite1 libxtst6 libfontconfig1
+      - name: Verify complete solution and owned X11 window
+        run: xvfb-run -a -s '-screen 0 1280x1024x24 +extension COMPOSITE' bash scripts/verify.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-regression-evidence
+          path: artifacts/verification/**
           retention-days: 14

@@ -8,6 +8,19 @@ public sealed class ExternalHistoryStoreTests : IDisposable
     private readonly string _folder = Path.Combine(Path.GetTempPath(), "paddi-history-" + Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task CancelledHistoryReadsDoNotKeepOpeningFilesOrMaskCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ExternalHistoryStore.ListAsync(_folder, ct: cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ExternalHistoryStore.ReadEventsAsync(Path.Combine(_folder, "does-not-exist"), cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ExternalHistoryStore.ReadEventsAsync(null, cancellation.Token));
+    }
+
+    [Fact]
     public async Task EventsStayOrderedAndQueuedSnapshotsCannotBeChangedByTheProducer()
     {
         await using var store = new ExternalHistoryStore(_folder);
@@ -98,6 +111,14 @@ public sealed class ExternalHistoryStoreTests : IDisposable
         Assert.Empty((await GameRecordStorage.ReadValidatedAsync(original, default)).Moves);
         await using var current = ExternalHistoryStore.OpenRecordRead(store.RecordPath);
         Assert.Equal(["h2e2"], (await GameRecordStorage.ReadValidatedAsync(current, default)).Moves);
+        await store.AppendAsync(new ExternalHistoryEvent { Kind = "confirmed", Move = "h9g7" },
+            new GameRecord { Moves = ["h2e2", "h9g7"], CurrentPly = 2 });
+        await store.FlushAsync();
+        original.Position = 0; current.Position = 0;
+        Assert.Empty((await GameRecordStorage.ReadValidatedAsync(original, default)).Moves);
+        Assert.Equal(["h2e2"], (await GameRecordStorage.ReadValidatedAsync(current, default)).Moves);
+        await using var latest = ExternalHistoryStore.OpenRecordRead(store.RecordPath);
+        Assert.Equal(["h2e2", "h9g7"], (await GameRecordStorage.ReadValidatedAsync(latest, default)).Moves);
     }
 
     [Fact]

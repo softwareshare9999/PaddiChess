@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Full local/CI gate. Does not launch a GUI, send native input, package or sign releases.
+# Full local/CI gate. Native-input opt-in only targets test-owned windows.
+# Does not start a real game or package releases; native macOS builds are ad-hoc signed.
 set -euo pipefail
 
 if [[ $# -ne 0 ]]; then
@@ -55,6 +56,7 @@ classifier = Path('PaddiChess/Assets/Recognition/xiangqi-nano-v3.onnx')
 if hashlib.sha256(classifier.read_bytes()).hexdigest() != 'da66ba9809f15127f8ae729b1755e42ee61c100c4f9979ce0ef13602ac471298':
     raise SystemExit('Board classifier checksum differs from Assets/Recognition/SOURCE.md.')
 PY
+python3 scripts/verify-dependency-inventory.py
 chmod +x "$engine_binary"
 
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"

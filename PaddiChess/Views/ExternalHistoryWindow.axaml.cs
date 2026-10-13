@@ -10,10 +10,13 @@ public partial class ExternalHistoryWindow : Window
     private readonly string _folder;
     private readonly string _recovery;
     private readonly bool _canReplay;
+    private int _eventPage, _sessionPage;
+    private HistoryCleanupPlan? _cleanup;
     private bool _closed;
     private bool _replaying;
     private int _refreshVersion;
     private int _selectionVersion;
+    private CancellationTokenSource? _refreshCancellation, _eventsCancellation, _replayCancellation;
     private ExternalHistoryEvent? _previewEvent;
     private string _previewSource = "current";
 
@@ -26,41 +29,72 @@ public partial class ExternalHistoryWindow : Window
         _folder = folder; _recovery = recovery; _canReplay = canReplay;
         if (!canReplay) HistoryHint.Text += " 当前保持连接，可查看记录；断开后可加载棋谱复盘。";
         Opened += async (_, _) => await RefreshAsync();
-        Closed += (_, _) => _closed = true;
+        Closed += (_, _) =>
+        {
+            _closed = true;
+            _refreshCancellation?.Cancel();
+            _eventsCancellation?.Cancel();
+            _replayCancellation?.Cancel();
+        };
     }
 
     private async Task RefreshAsync()
     {
+        if (_closed) return;
+        _refreshCancellation?.Cancel();
+        using var cancellation = new CancellationTokenSource();
+        _refreshCancellation = cancellation;
         var version = ++_refreshVersion;
         try
         {
             HistoryStatus.Text = "正在读取本机记录…";
-            var records = await ExternalHistoryStore.ListAsync(_folder, _recovery);
+            var records = await ExternalHistoryStore.ListAsync(_folder, _recovery, cancellation.Token, _sessionPage);
             if (_closed || version != _refreshVersion) return;
             SessionsList.ItemsSource = records;
+            PreviousSessions.IsEnabled = _sessionPage > 0; NextSessions.IsEnabled = records.Count == 500;
+            SessionPageText.Text = $"会话 · 第 {_sessionPage + 1} 页";
             HistoryStatus.Text = records.Count == 0 ? "尚无自动保存的接管记录。" : $"最近 {records.Count} 份记录 · 仅保存于本机";
             if (records.Count > 0) SessionsList.SelectedIndex = 0;
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception error)
         { if (!_closed && version == _refreshVersion) HistoryStatus.Text = "读取记录失败：" + error.Message; }
+        finally { if (ReferenceEquals(_refreshCancellation, cancellation)) _refreshCancellation = null; }
     }
 
     private async void Session_Changed(object? sender, SelectionChangedEventArgs e)
     {
+        _eventPage = -1;
+        await LoadEventPageAsync();
+    }
+
+    private async Task LoadEventPageAsync()
+    {
+        _eventsCancellation?.Cancel();
+        _replayCancellation?.Cancel();
         var version = ++_selectionVersion;
         ReplayButton.IsEnabled = _canReplay && !_replaying && SessionsList.SelectedItem is ExternalHistoryItem;
         EventsList.ItemsSource = null; EventDetails.Text = "";
         SetPreviewEvent(null);
-        if (SessionsList.SelectedItem is not ExternalHistoryItem item) return;
+        if (_closed || SessionsList.SelectedItem is not ExternalHistoryItem item) return;
+        using var cancellation = new CancellationTokenSource();
+        _eventsCancellation = cancellation;
         try
         {
-            var events = await ExternalHistoryStore.ReadEventsAsync(item.EventsPath);
+            var page = _eventPage < 0 ? await ExternalHistoryPaging.ReadLastAsync(item.EventsPath, cancellation.Token)
+                : await ExternalHistoryPaging.ReadAsync(item.EventsPath, _eventPage, cancellation.Token);
+            var events = page.Events;
             if (_closed || version != _selectionVersion) return;
+            _eventPage = page.Number;
             EventsList.ItemsSource = events;
+            PreviousEvents.IsEnabled = _eventPage > 0; NextEvents.IsEnabled = page.HasNext;
+            EventPageText.Text = $"事件 · 第 {_eventPage + 1} 页";
             if (events.Count > 0) EventsList.SelectedIndex = events.Count - 1;
             else EventDetails.Text = "这份旧恢复记录只包含棋谱，没有当时的识别和发送事件。\n\n文件：" + item.RecordPath;
         }
-        catch (Exception error) { if (version == _selectionVersion) EventDetails.Text = "读取事件失败：" + error.Message; }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception error) { if (!_closed && version == _selectionVersion) EventDetails.Text = "读取事件失败：" + error.Message; }
+        finally { if (ReferenceEquals(_eventsCancellation, cancellation)) _eventsCancellation = null; }
     }
 
     private void Event_Changed(object? sender, SelectionChangedEventArgs e)
@@ -148,19 +182,69 @@ public partial class ExternalHistoryWindow : Window
         if (!_canReplay || _replaying || SessionsList.SelectedItem is not ExternalHistoryItem item) return;
         _replaying = true;
         var version = _selectionVersion;
+        using var cancellation = new CancellationTokenSource();
+        _replayCancellation = cancellation;
         ReplayButton.IsEnabled = false;
         try
         {
             await using var stream = ExternalHistoryStore.OpenRecordRead(item.RecordPath);
-            var record = await GameRecordStorage.ReadValidatedAsync(stream, CancellationToken.None);
+            var record = await GameRecordStorage.ReadValidatedAsync(stream, cancellation.Token);
             if (!_closed && version == _selectionVersion) Close(record);
         }
-        catch (Exception error) { HistoryStatus.Text = "这份棋谱无法加载：" + error.Message; }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception error) { if (!_closed && version == _selectionVersion) HistoryStatus.Text = "这份棋谱无法加载：" + error.Message; }
         finally
         {
             _replaying = false;
+            if (ReferenceEquals(_replayCancellation, cancellation)) _replayCancellation = null;
             if (!_closed) ReplayButton.IsEnabled = _canReplay && SessionsList.SelectedItem is ExternalHistoryItem;
         }
+    }
+
+    private async void EventPage_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string step }) return;
+        _eventPage = step == "last" ? -1 : Math.Max(0, _eventPage + int.Parse(step));
+        await LoadEventPageAsync();
+    }
+    private async void SessionPage_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string step }) return;
+        _sessionPage = Math.Max(0, _sessionPage + int.Parse(step));
+        await RefreshAsync();
+    }
+    private void Retention_Changed(object? sender, SelectionChangedEventArgs e)
+    {
+        _cleanup = null;
+        if (ConfirmCleanup != null) ConfirmCleanup.IsEnabled = false;
+    }
+    private async void PlanCleanup_Click(object? sender, RoutedEventArgs e)
+    {
+        var days = RetentionChoice.SelectedIndex switch { 1 => 7, 2 => 30, 3 => 90, _ => 0 };
+        var choice = RetentionChoice.SelectedIndex;
+        if (days == 0) { HistoryStatus.Text = "保留全部记录；仅点击确认清理才会删除旧记录。"; return; }
+        try
+        {
+            var plan = await ExternalHistoryPaging.PlanCleanupAsync(_folder, days);
+            if (_closed || choice != RetentionChoice.SelectedIndex) return;
+            _cleanup = plan;
+            HistoryStatus.Text = $"待清理 {_cleanup.Directories.Count} 份、约 {_cleanup.Bytes / 1048576d:F1} MB。正在记录的会话会跳过；删除无法撤销。";
+            ConfirmCleanup.IsEnabled = _cleanup.Directories.Count > 0;
+        }
+        catch (Exception error) { if (!_closed) HistoryStatus.Text = "检查失败：" + error.Message; }
+    }
+    private async void ConfirmCleanup_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_cleanup is not { } plan) return;
+        _cleanup = null; ConfirmCleanup.IsEnabled = false;
+        try
+        {
+            var count = await ExternalHistoryPaging.DeleteAsync(plan);
+            if (_closed) return;
+            _sessionPage = 0; await RefreshAsync();
+            HistoryStatus.Text = $"已清理 {count} 份旧记录；正在记录的会话保留。";
+        }
+        catch (Exception error) { if (!_closed) HistoryStatus.Text = "清理失败：" + error.Message; }
     }
 
     private async void Refresh_Click(object? sender, RoutedEventArgs e) => await RefreshAsync();

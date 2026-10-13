@@ -35,10 +35,9 @@ public class ExternalTurnInferenceTests
         Assert.Null(ExternalTurnInference.RunningClock(first, new(null, 789)));
     }
 
-    [Fact]
+    [MacClockFact]
     public async Task MacClockReaderFindsBothTimersInRealJjScreenshot()
     {
-        if (!OperatingSystem.IsMacOS()) return;
         var png = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "jj-wechat-midgame-1.png"));
         var geometry = BoardLocator.Locate(png)!;
         var clocks = await ExternalTurnInference.ReadClocksAsync(png, geometry, CancellationToken.None);
@@ -88,7 +87,7 @@ public class ExternalTurnInferenceTests
 [Collection("Desktop integration")]
 public class ExternalAutoSideUiTests
 {
-    private static HeadlessUnitTestSession Session => ExternalSessionTests.Session;
+    private static AwaitedUiSession Session => ExternalSessionTests.Session;
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
     private static void Set(MainWindow window, string name, object value) => typeof(MainWindow).GetField(name, Private)!.SetValue(window, value);
     private static T Get<T>(MainWindow window, string name) => (T)typeof(MainWindow).GetField(name, Private)!.GetValue(window)!;

@@ -59,7 +59,7 @@ flowchart TD
 | `Sessions/ExternalRecognitionRefresh.cs` | 后台完整识别与请求身份 |
 | `External/ExternalDesktop.cs` | 平台接口与 macOS／Windows 后端 |
 | `External/ExternalPositionRecognizer.cs` | 象棋专用模型与局部 OCR 补识入口 |
-| `External/ExternalManualPosition.cs` | 用户明确采用的标签与原始字形、窗口、网格绑定；变化格不沿用 |
+| `External/ExternalManualPosition.cs` | 用户确认标签绑定原始字形、窗口和网格；变化格需与原始已核对类别重新比较 |
 | `External/ExternalMoveConfirmation.cs` | 稳定落点确认 |
 | `External/ExternalMoveRecovery.cs` | 近期错误匹配的恢复检查点 |
 | `Services/ExternalHistoryStore.cs` | 有界串行日志、原子棋谱快照与历史读取 |
@@ -132,18 +132,22 @@ UI 控件在 UI 线程访问；识别计算、文件 I/O 和独立引擎／网�
 
 结束会话先同步摘除旧 writer，再异步排空；重复结束共享排空任务，避免旧回调清掉新会话。读取棋谱的句柄允许原子替换，兼顾 Windows 文件共享规则。日志最后一行因崩溃不完整时，前面的有效事件仍可读取。
 
-UI 预览始终创建独立棋局，棋盘禁止输入并关闭动画。图像识别预览不将 FEN 轮次当作可靠外部轮次；异步会话读取、刷新和复盘使用版本检查，避免旧读取覆盖新选择。
+UI 预览始终创建独立棋局，棋盘禁止输入并关闭动画。图像识别预览不将 FEN 轮次当作可靠外部轮次；异步会话读取、刷新和复盘使用版本检查，避免旧读取覆盖新选择。切换、刷新或关闭时取消过时任务；JSONL 文件读取和解析在线程池执行，避免命中文件缓存后的连续同步完成阻塞 UI。
 
 ## 原生与平台边界
 
-macOS 桥接由 Swift 编译，通过进程协议实现捕获、权限检测和输入。macOS 14 及以上采用常驻捕获流；较早版本有兼容路径。Windows 后端处理 GDI、像素与平台输入。Linux 未实现外部接管后端。
+macOS 桥接由 Swift 编译，通过进程协议实现捕获、权限检测和输入。macOS 14 及以上采用常驻捕获流；较早版本有兼容路径。Windows 后端处理 GDI、像素与平台输入。Linux X11 后端通过独立进程使用 XComposite 捕获窗口内容、XTest 发送前台鼠标输入；Wayland 环境明确显示不支持。
 
 `Native/PikafishRules` 固定使用 0906 规则源码，发布包的执棋引擎则为 0925；两者职责与规则配置不可混同。适配器不加载 NNUE、不执行棋力搜索，详见[组件来源](../PaddiChess/Native/PikafishRules/SOURCE.md)。
 
-## 后续改进方向
+## 本轮职责拆分
 
-- 继续将可复用调度状态从窗口迁入会话服务，同时保留现有乱序与取消回归。
-- 验收 Windows PowerShell 原生构建入口及真实目标窗口，再扩大 CI 覆盖。
-- 扩充有授权的主题、字体、光效和 DPI 夹具；无法区分的图像应保持不确定。
-- 分别测量捕获、识别、确认、搜索与输入耗时；不通过降低安全核验门槛获得好看的延迟。
-- 若未来让模型裁判跟随任意插件规则，需要可验证协议；不能假定标准 UCI 已提供统一的历史禁手接口。
+`ExternalSessionCoordinator` 接管搜索任务及取消源、识别刷新、落子前双帧核验、捕获节奏和阶段时延。视图提供捕获／界面更新委托，业务层不引用 Avalonia。`MainWindow` 仍负责将会话结果提交到活动棋局和渲染，不能在后台线程直接读取其可变状态。
+
+生产入口使用 `RecognitionWorkerClient`；常驻子进程拥有 ONNX 模型与 OCR 缓存，通过限长 JSON 控制消息和原始 BGRA 传图。排队取消不会终止正在服务另一个请求的进程；运行中取消会终止对应进程，下次 CPU 重启。GPU 首次编译在后台继续，握手只等待 CPU 可用。测试入口允许注入进程内识别器。
+
+模型调用分为 `LlmCompletionTransport`（HTTP／请求结构）、`LlmCompletionProtocol`（JSON、SSE 与工具调用解析）、`LlmChessClient`（候选约束、选招与重试）。`IRuleMoveProvider` 声明合法候选查询；普通 UCI 的可配置规则不意味着具备这个查询协议。
+
+历史列表优先读取摘要，每页 500 会话；事件每页 128 行，按字节偏移索引直接定位。旧 JSONL 首次访问建立索引，损坏行被忽略但仍计入物理分页，未完成尾行不解析。清理必须由用户预览后确认；活动 writer 持有独占租约，清理无法取得租约时跳过。
+
+更多运行方式与验证边界见 [工程改进与性能验证](engineering-followup.md)。
