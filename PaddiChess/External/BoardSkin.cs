@@ -25,7 +25,11 @@ public sealed record BoardSkin(string Name, Dictionary<char, List<float[]>> Samp
         {
             var piece = game.Board[i / 9, i % 9];
             if (!samples.TryGetValue(piece, out var list)) samples[piece] = list = [];
-            if (list.Count < (piece == '\0' ? 60 : 5)) list.Add(image.Cells[i]);
+            // A late position can have up to 88 empty intersections. Keep every
+            // independently labelled sample, including the last ranks/corners:
+            // their borders and palace lines need not resemble earlier empties.
+            // The board already bounds the entire vocabulary to 90 samples.
+            list.Add(image.Cells[i]);
         }
         if (requireAllPieces && "rnbakcpRNBAKCP".Any(p => !samples.ContainsKey(p)))
             throw new InvalidOperationException("学习样式需要红黑双方的全部七种棋子。请使用完整开局学习，之后就能识别同款棋盘的中局。");
@@ -73,8 +77,12 @@ public sealed record BoardSkin(string Name, Dictionary<char, List<float[]>> Samp
         for (int i = 0; i < 90; i++)
         {
             if (knownPieces?[i] is { } known) { board[i] = known; continue; }
-            var square = new Square(i % 9, i / 9);
-            var ranked = Samples.Where(pair => !restrictSquares || PositionSetup.CanOccupySquare(pair.Key, square))
+            // Compare visual identities before applying placement rules. Filtering
+            // first leaves only "empty" on many sparse-board squares, making the
+            // runner-up margin impossible even when the pixels match perfectly.
+            // Forbidden identities are also useful negative evidence: do not hide
+            // a misplaced/animated piece by removing it from the competition.
+            var ranked = Samples
                 .Select(pair => (Piece: pair.Key, Error: Distance(pair.Key, image.Cells[i])))
                 .OrderBy(p => p.Error).ToArray();
             if (ranked[0].Error > .04 || ranked.Length > 1 && ranked[1].Error - ranked[0].Error < .018)
@@ -101,7 +109,8 @@ public sealed record BoardSkin(string Name, Dictionary<char, List<float[]>> Samp
             // incompatible vocabulary is rejected below, never published as a board.
             board[i] = best.Piece; worst = Math.Max(worst, best.Error);
             rankedCells[i] = ranked;
-            if (best.Error > .10 || ranked.Length < 2 || ranked[1].Error - best.Error < .012)
+            if (best.Error > .10 || ranked.Length < 2 || ranked[1].Error - best.Error < .012 ||
+                restrictSquares && !PositionSetup.CanOccupySquare(best.Piece, new Square(i % 9, i / 9)))
                 uncertain.Add(new Square(i % 9, i / 9));
         }
         if (restrictSquares && knownPieces is null)
@@ -264,7 +273,7 @@ public sealed record BoardSkin(string Name, Dictionary<char, List<float[]>> Samp
         catch (JsonException ex) { throw new FormatException("棋子样式文件损坏，请重新学习", ex); }
         if (string.IsNullOrWhiteSpace(skin.Name) || skin.Samples == null || skin.Samples.Count != 15 ||
             "rnbakcpRNBAKCP\0".Any(c => !skin.Samples.ContainsKey(c)) ||
-            skin.Samples.Values.Any(v => v == null || v.Count is < 1 or > 60 ||
+            skin.Samples.Values.Any(v => v == null || v.Count is < 1 or > 90 ||
                 v.Any(s => s == null || s.Length != 1728 || s.Any(n => !float.IsFinite(n) || n < 0 || n > 1))))
             throw new FormatException("棋子样式文件损坏，请重新学习");
         return skin;

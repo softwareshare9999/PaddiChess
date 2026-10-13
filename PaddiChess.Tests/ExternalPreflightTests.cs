@@ -283,7 +283,8 @@ public partial class ExternalSessionTests
         Assert.True(condition(), window.FindControl<TextBlock>("ExternalStatusText")!.Text);
     }
 
-    private static async Task WithPreflightAsync(bool flipped, bool model, Func<PreflightFixture, Task> test)
+    private static async Task WithPreflightAsync(bool flipped, bool model, Func<PreflightFixture, Task> test,
+        string? initialFen = null)
     {
         await Session.Dispatch(async () =>
         {
@@ -306,6 +307,7 @@ public partial class ExternalSessionTests
             }.Save();
             var window = new MainWindow();
             var desktop = new PreflightDesktop(flipped);
+            if (initialFen is not null) desktop.LoadFen(initialFen);
             var handler = model ? new PreflightModelHandler() : null;
             using var http = handler is null ? null : new HttpClient(handler);
             try
@@ -321,7 +323,7 @@ public partial class ExternalSessionTests
                 var geometry = new BoardCalibration(40, 40, 440, 490, flipped);
                 Set(window, "_externalCalibration", geometry);
                 Set(window, "_externalSessionSkin", BoardSkin.Learn("preflight fixture",
-                    BoardObservation.Read(first.Png, geometry), desktop.Game));
+                    BoardObservation.Read(first.Png, geometry), desktop.Game, requireAllPieces: initialFen is null));
                 if (model)
                 {
                     Set(window, "_llmClient", new LlmChessClient(http!));
@@ -363,6 +365,7 @@ public partial class ExternalSessionTests
         public ExternalWindow Target { get; set; } = new(786, 786, "preflight fixture", 0, 0, 480, 530);
         public int BackingScale { get; set; } = 1;
         public Func<int, CancellationToken, Task>? BeforeCaptureAsync { get; set; }
+        public Func<ExternalFrame, ExternalFrame>? TransformFrame { get; set; }
         public List<(int PixelWidth, int PixelHeight, ExternalWindow Window)> CaptureSizes { get; } = [];
         public List<PreflightInput> Inputs { get; } = [];
         public XiangqiGame Game { get; } = new();
@@ -382,6 +385,7 @@ public partial class ExternalSessionTests
         public int IgnoreInputs { get; set; }
         public bool SelectOnIgnoredInput { get; set; }
         public bool PulseEveryCapture { get; set; }
+        public Square PulseSquare { get; set; } = new(0, 0);
         public int CompletionAttempts { get; private set; }
         public bool CanCompleteSelectedMove => true;
         private Square? _selected;
@@ -421,9 +425,15 @@ public partial class ExternalSessionTests
             if (_selected is { } selection)
                 png = PulsePiece(png, selection, flipped, 20);
             else if (PulseEveryCapture)
-                png = PulsePiece(png, new Square(0, 0), flipped, Captures % 2 == 0 ? 7 : 18);
+                png = PulsePiece(png, PulseSquare, flipped, Captures % 2 == 0 ? 7 : 18);
             CaptureSizes.Add((480 * BackingScale, 530 * BackingScale, Target));
-            return new ExternalFrame(Target, png);
+            var frame = new ExternalFrame(Target, png);
+            return TransformFrame?.Invoke(frame) ?? frame;
+        }
+        public void LoadFen(string fen)
+        {
+            Game.LoadFen(fen);
+            _png = ExternalBoardTests.Render(Game, flipped);
         }
         public void Advance(string move)
         {
@@ -467,6 +477,7 @@ public partial class ExternalSessionTests
         private int _count;
         public int Count => Volatile.Read(ref _count);
         public bool BlockFirst { get; set; }
+        public string? PreferredMove { get; set; }
         public TaskCompletionSource ReleaseFirst { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ConcurrentQueue<PreflightModelRequest> Requests { get; } = new();
         public TaskCompletionSource FirstRequest { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -477,8 +488,10 @@ public partial class ExternalSessionTests
             Assert.Equal("/v1/chat/completions", request.RequestUri.AbsolutePath);
             using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
             var root = body.RootElement;
-            var move = root.GetProperty("tools")[0].GetProperty("function").GetProperty("parameters")
-                .GetProperty("properties").GetProperty("move").GetProperty("enum")[0].GetString()!;
+            var choices = root.GetProperty("tools")[0].GetProperty("function").GetProperty("parameters")
+                .GetProperty("properties").GetProperty("move").GetProperty("enum").EnumerateArray()
+                .Select(value => value.GetString()!).ToArray();
+            var move = PreferredMove is { } preferred && choices.Contains(preferred) ? preferred : choices[0];
             var model = root.GetProperty("model").GetString()!;
             var effort = root.TryGetProperty("reasoning_effort", out var reasoning) ? reasoning.GetString() : null;
             Requests.Enqueue(new(model, effort, move));
