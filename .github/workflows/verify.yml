@@ -52,10 +52,7 @@ jobs:
           retention-days: 14
   macos-regression:
     name: macOS · locked dependencies and regression
-    # macos-15 currently queues then cancels after 15 minutes on this fork
-    # ("job was not acquired by Runner of type hosted"). macos-latest maps to
-    # the macos-26 arm64 pool, which GitHub is still assigning.
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 30
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
