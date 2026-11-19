@@ -97,7 +97,7 @@ jobs:
     name: Package macOS (Apple Silicon) and Windows x64
     needs: prepare
     if: needs.prepare.outputs.skip != 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     env:
       TAG: ${{ needs.prepare.outputs.tag }}
